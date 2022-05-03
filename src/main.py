@@ -51,7 +51,8 @@ def pdos_read(seed,species):
     orbital_species=f.read_ints('>u4')
     orbital_ion=f.read_ints('>u4')
     orbital_l=f.read_ints('>u4')
-    
+    print(orbital_species,orbital_ion,orbital_l)   
+
     kpoints=np.zeros((num_kpoints,3))
     pdos_weights=np.zeros((num_popn_orb,max_eigenvalues,num_kpoints,num_spins))
     for nk in range(0,num_kpoints):
@@ -102,25 +103,6 @@ def pdos_read(seed,species):
     return np.round(pdos_weights_sum,7)
 
 
-def path_finder():
-    
-    # Open the cell
-    path_str=bv_latt.special_path
-
-    path_points=[]
-    path_labels=[]
-    for L in path_str:
-        if L==",":
-            break
-        path_labels.append(L)
-        path_points.append(special_points[L])
-
-    print("%BLOCK SPECTRAL_KPOINT_PATH")
-    for i in range(len(path_labels)):
-        print("%.5f %.5f %.5f" %(path_points[i][0],path_points[i][1],path_points[i][2]),"#",path_labels[i])
-    print("%ENDBLOCK SPECTRAL_KPOINT_PATH")
-    
-    
 
     
 
@@ -171,7 +153,7 @@ def calc_phonons(buff_seed):
 
     kpoint_array=np.empty(shape=(no_kpoints)) # the array holding the number of the kpoint
     kpoint_list=[] # array of the kpoint vectors
-
+    
 
     kpoint_string=lines[15::no_branches+3+no_ions*no_branches]
     
@@ -214,7 +196,7 @@ def calc_phonons(buff_seed):
     
 # Variables we need from the bands file
 
-def calc_bands(buff_seed):
+def calc_bands(buff_seed,zero,show):
     no_spins = 0
     no_kpoints = 0
     fermi_energy = 0
@@ -281,14 +263,20 @@ def calc_bands(buff_seed):
     for k in range(0,no_kpoints):
         if no_spins==1:
             ind=9+k*no_eigen+2*(k+1)
-            energy_array[k,:]=hartree*np.array([float(i)-fermi_energy for i in lines[ind:ind+no_eigen]])
+            if not zero:
+                energy_array[k,:]=hartree*np.array([float(i)-fermi_energy for i in lines[ind:ind+no_eigen]])
+            else:
+                energy_array[k,:]=hartree*np.array([float(i) for i in lines[ind:ind+no_eigen]])
         if no_spins==2:
             ind=9+k*(no_eigen+no_eigen_2+1)+2*(k+1)
         
-
-            energy_array[k,:]=hartree*np.array([float(i)-fermi_energy for i in lines[ind:ind+no_eigen]])
-            energy_array_2[k,:]=hartree*np.array([float(i)-fermi_energy for i in lines[ind+no_eigen+1:ind+no_eigen+1+no_eigen_2]])
-
+            if not zero:
+                energy_array[k,:]=hartree*np.array([float(i)-fermi_energy for i in lines[ind:ind+no_eigen]])
+                energy_array_2[k,:]=hartree*np.array([float(i)-fermi_energy for i in lines[ind+no_eigen+1:ind+no_eigen+1+no_eigen_2]])
+            else:
+                energy_array[k,:]=hartree*np.array([float(i) for i in lines[ind:ind+no_eigen]])
+                energy_array_2[k,:]=hartree*np.array([float(i) for i in lines[ind+no_eigen+1:ind+no_eigen+1+no_eigen_2]])
+                
     sort_array=kpoint_array.argsort()
 
     kpoint_list=np.array(kpoint_list)[sort_array]
@@ -341,7 +329,7 @@ def main_dispersion():
     parser.add_argument("-s","--spin",help="Plot spin-up and spin-down channels.",action="store_true")
     parser.add_argument("-d","--debug",action='store_true',help="Debug flag.")
     #parser.add_argument("--sym",help="Provide crystal symmetry for plot labels.",default=None)
-    parser.add_argument("--soc",help="Seedname of second bands file containing SOC bandstructure.",default=None)
+    parser.add_argument("--overlay",help="Seedname of second bands file containing a different bandstructure.",default=None)
     parser.add_argument("--n_up",help="Indices of up bands to be highlighted",nargs="+")
     parser.add_argument("--n_down",help="Indices of down bands to be highlighted",nargs="+")
     parser.add_argument("-f","--flip",action="store_true",help="Plot with a global spin flip")
@@ -356,6 +344,11 @@ def main_dispersion():
     parser.add_argument("--phonon",help="Plot phonon dispersion curve",action='store_true')
     parser.add_argument("-b","--bandgap",help="Indicate bandgap on plots",action="store_true")
     parser.add_argument("--no_plot",help="Supress plotting of dispersions",action="store_true")
+    parser.add_argument("--overlay_labels",help="Legend labels for overlay plots",nargs=2,default=[None,None])
+    parser.add_argument("-E","--optados",help="Use castep fermi energy if optados error persists",action='store_true')
+    parser.add_argument("-as",'--aspect_ratio',help="Specify the aspect ratio of the dispersion plot.",choices=['letter','square'],default='square')
+    parser.add_argument('-z','--zero',help='Do not shift the Fermi level to 0 eV.',action='store_true')
+    parser.add_argument('--show',help='Supress plotting of spin bands',choices=['up','down','both'],default='both')
     args = parser.parse_args()
     seed = args.seed
     save = args.save
@@ -365,7 +358,7 @@ def main_dispersion():
     debug=args.debug
     spin_split=args.spin
     #sym=args.sym
-    SOC=args.soc
+    SOC=args.overlay
     spin_polarised=False
     n_up=args.n_up
     n_down=args.n_down
@@ -381,9 +374,34 @@ def main_dispersion():
     do_phonons=args.phonon
     bg=args.bandgap
     no_plot=args.no_plot
+    overlay_labels=args.overlay_labels
+    opt_err=args.optados
+    aspect=args.aspect_ratio
+    zero=args.zero
+    show=args.show
     blockPrint()
 
-    print(do_phonons)
+    def path_finder():
+    
+        # Open the cell
+        path_str=bv_latt.special_path
+        
+        path_points=[]
+        path_labels=[]
+        for L in path_str:
+            if L==",":
+                break
+            path_labels.append(L)
+            path_points.append(special_points[L])
+            
+        print("%BLOCK SPECTRAL_KPOINT_PATH")
+        for i in range(len(path_labels)):
+            print("%.5f %.5f %.5f" %(path_points[i][0],path_points[i][1],path_points[i][2]),"#",path_labels[i])
+        print("%ENDBLOCK SPECTRAL_KPOINT_PATH")
+    
+    
+
+    
     
     # Dothe path and labels
     cell=io.read(seed+".cell")
@@ -404,9 +422,12 @@ def main_dispersion():
             path_labels=[]
             
             for i in path:
+
                 
                 try:
                     path_point=special_points[i]
+                    path_points.append(path_point)
+                    path_labels.append(i)
                 except:
                     print()
                     print("Error: %s has no symmetry point %s"%(bv_latt.name,i))
@@ -447,15 +468,15 @@ def main_dispersion():
     if multi and spin_split:
         multi=False
         
-    if doSOC:
-        multi=False
-        spin_split=False
+    #if doSOC:
+    #    multi=False
+    #    spin_split=False
     
     #set the colours
     if spin_split:
         spin_up="r"
         spin_do="b"
-    if flip:
+    elif flip:
         spin_up="b"
         spin_do="r"
     
@@ -469,11 +490,11 @@ def main_dispersion():
         pdos_weights=pdos_read(seed,species)
         
     if doSOC:
-        energy_array_soc,energy_array_2,sort_array_soc,kpoint_list_soc,kpoint_array_soc,no_spins,no_kpoints,fermi_energy,no_electrons,no_electrons_2,no_eigen,no_eigen_2,lattice2=calc_bands(SOC)
+        energy_array_soc,energy_array_soc2,sort_array_soc,kpoint_list_soc,kpoint_array_soc,no_spins_soc,no_kpoints,fermi_energy,no_electrons,no_electrons_2,no_eigen,no_eigen_2,lattice2=calc_bands(SOC,zero,show)
 
     if not do_phonons:
-        energy_array,energy_array_2,sort_array,kpoint_list,kpoint_array,no_spins,no_kpoints,fermi_energy,no_electrons,no_electrons_2,no_eigen,no_eigen_2,lattice=calc_bands(seed)
-    
+        energy_array,energy_array_2,sort_array,kpoint_list,kpoint_array,no_spins,no_kpoints,fermi_energy,no_electrons,no_electrons_2,no_eigen,no_eigen_2,lattice=calc_bands(seed,zero,show)
+
         if energy_array_2.shape[1]!=0:
 
 
@@ -593,7 +614,7 @@ def main_dispersion():
         #############################################
     
         if len(high_sym)!=len(high_sym_soc):
-            print("SOC Bandsstructure Does not match")
+            print("Second Bandsstructure Does not match")
             sys.exit()
     
         for i in range(1,len(high_sym)):
@@ -621,28 +642,43 @@ def main_dispersion():
     #matplotlib.rcParams['font.family'] = "sans-serif"
     
     if not do_dos:
-        fig, ax = plt.subplots(figsize=(7,7))
+        if aspect=='square':
+            aspect_r=(7,7)
+        else:
+            aspect_r=(9,7)
+        fig, ax = plt.subplots(figsize=aspect_r)
     else:
         from matplotlib.ticker import MaxNLocator
         fig, (ax, ax2) = plt.subplots(1, 2,sharey=True, gridspec_kw={'hspace': 0,'wspace': 0,'width_ratios': [2.4, 1]},figsize=(11,7))
         for file in dos_files:
             pdos_dat=np.loadtxt(file)
             shape=pdos_dat.shape[1]
-            
-            energy = pdos_dat[:,0]
-            if lim[0]!= None:
-                mask = (energy >= float(lim[0])) & (energy <= float(lim[1]))
+            if opt_err:
+                energy = pdos_dat[:,0]-fermi_energy*hartree
+
             else:
-                ax2.set_ylim(lim[0],lim[1])
+                energy = pdos_dat[:,0]
+            if lim[0]!= None:
+                if not zero:
+                    mask = (energy >= float(lim[0])) & (energy <= float(lim[1]))
+                else:
+                    mask = (energy >= float(lim[0])+fermi_energy*hartree) & (energy <= float(lim[1])+fermi_energy*hartree)
+            else:
+                if not zero:
+                    ax2.set_ylim(lim[0],lim[1])
+                else:
+                    ax2.set_ylim(lim[0]+fermi_energy*hartree,lim[1]+fermi_energy*hartree)
                 mask=[True]*len(energy)
                 [mask]
     
             if shape==3:
-                ax2.plot(pdos_dat[:,1][mask],energy[mask],linewidth=linewidth,linestyle="--",color="black")
+                ax2.plot(pdos_dat[:,1][mask],energy[mask],linewidth=linewidth,color="black")
             if shape==5:
                 ax2.plot(2*(pdos_dat[:,1][mask]-pdos_dat[:,2][mask]),energy[mask],linewidth=linewidth,color="black")
-    
-        ax2.axhline(0,color="0.6",dashes=[8, 8],linewidth=1,)
+        if not zero:
+            ax2.axhline(0,color="0.6",dashes=[8, 8],linewidth=1,)
+        else:
+            ax2.axhline(fermi_energy*hartree,color="0.6",dashes=[8, 8],linewidth=1,)
         ax2.tick_params(axis='both', which='major', labelsize=text,length=7)
         ax2.set_xlabel(r"$\mathit{g}(\mathit{E}$) (states/eV)",fontsize=text)
         ax2.xaxis.set_major_locator(MaxNLocator(4)) 
@@ -654,17 +690,25 @@ def main_dispersion():
     for vline in high_sym:
         ax.axvline(vline,color="black",linewidth=1)
     ax.set_xticks(high_sym)
-    ax.axhline(0,color="0.6",dashes=[8, 8],linewidth=1,)
+    if not zero:    
+        ax.axhline(0,color="0.6",dashes=[8, 8],linewidth=1,)
+    else:
+        ax.axhline(fermi_energy*hartree,color="0.6",dashes=[8, 8],linewidth=1,)
     if not do_phonons:
-        ax.set_ylabel(r'$\mathit{E}$-$\mathit{E}_{\mathrm{F}}$ (eV)',fontsize=text)
+        if not zero:
+            ax.set_ylabel(r'$\mathit{E}$-$\mathit{E}_{\mathrm{F}}$ (eV)',fontsize=text)
+        else:
+            ax.set_ylabel(r'$\mathit{E}$ (eV)',fontsize=text)
     else:
         ax.set_ylabel(r'$\omega$ (cm$^{-1}$)',fontsize=text)
     ax.set_xlim(1,no_kpoints)
     ax.tick_params(axis='both', which='major', labelsize=text,length=7)
     
     if lim[0]!= None:
-        ax.set_ylim(float(lim[0]),float(lim[1]))
-    
+        if not zero:            
+            ax.set_ylim(float(lim[0]),float(lim[1]))
+        else:
+            ax.set_ylim(float(lim[0])+fermi_energy*hartree,float(lim[1])+fermi_energy*hartree)
     
     
     #set the x labels
@@ -726,10 +770,11 @@ def main_dispersion():
         if not do_phonons:
             ax.plot(kpoint_array[sort_array],energy_array[sort_array],linewidth=linewidth)
             if no_spins==2:
-                
-                ax.plot(kpoint_array[sort_array],energy_array_2[sort_array])
+                if show=='up' or show=='both':
+                    ax.plot(kpoint_array[sort_array],energy_array_2[sort_array])
         else:
-            ax.plot(kpoint_array[sort_array],energy_array[sort_array],linewidth=linewidth)
+            if show=='down' or show=='both':
+                ax.plot(kpoint_array[sort_array],energy_array[sort_array],linewidth=linewidth)
     elif not do_phonons:
         if pdos:
             from matplotlib import colors
@@ -737,6 +782,19 @@ def main_dispersion():
             from matplotlib.lines import Line2D
             import matplotlib.collections as mcoll
             import matplotlib.path as mpath
+            def make_segments(x, y):
+                """
+                Create list of line segments from x and y coordinates, in the correct format
+                for LineCollection: an array of the form numlines x (points per line) x 2 (x
+                and y) array
+                """
+                
+                points = np.array([x, y]).T.reshape(-1, 1, 2)
+                
+                
+                segments = np.concatenate([points[:-1], points[1:]], axis=1)
+                
+                return segments
             
             def colorline(
                     x, y, z=None, cmap=plt.get_cmap('copper'), norm=plt.Normalize(0.0, 1.0),
@@ -761,24 +819,8 @@ def main_dispersion():
                                           linewidth=linewidth, alpha=alpha)
                 
                 ax.add_collection(lc)
-                
+
                 return lc
-            
-            
-            def make_segments(x, y):
-                """
-                Create list of line segments from x and y coordinates, in the correct format
-                for LineCollection: an array of the form numlines x (points per line) x 2 (x
-                and y) array
-                """
-                
-                points = np.array([x, y]).T.reshape(-1, 1, 2)
-                
-                
-                segments = np.concatenate([points[:-1], points[1:]], axis=1)
-                
-                return segments
-            
             
     
             if species:
@@ -812,24 +854,24 @@ def main_dispersion():
                 colorline(kpoint_array[sort_array], energy_array[sort_array][:,nb], z, cmap=cmap, linewidth=3)
                 ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,nb],linewidth=linewidth,alpha=0)
             
-                if no_spins==2:
-        
-                    for nb in range(no_eigen):               
-                        # calculate the colour
-                        cmap_array=np.zeros((len(kpoint_array),4))
-                        for i in range(n_cat):
+            if no_spins==2:
+
+                for nb in range(no_eigen):               
+                    # calculate the colour
+                    cmap_array=np.zeros((len(kpoint_array),4))
+                    for i in range(n_cat):
                             
-                            cmap_array[:,0]+=pdos_weights[i,nb,:,1]*basis[i][0]#/n_cat
-                            cmap_array[:,1]+=pdos_weights[i,nb,:,1]*basis[i][1]#/n_cat
-                            cmap_array[:,2]+=pdos_weights[i,nb,:,1]*basis[i][2]#/n_cat
-                            cmap_array[:,3]+=pdos_weights[i,nb,:,1]*basis[i][3]#/n_cat
-                            
-                            #cmap_array[:,0:3]=cmap_array[:,0:3]/n_cat
+                        cmap_array[:,0]+=pdos_weights[i,nb,:,1]*basis[i][0]#/n_cat
+                        cmap_array[:,1]+=pdos_weights[i,nb,:,1]*basis[i][1]#/n_cat
+                        cmap_array[:,2]+=pdos_weights[i,nb,:,1]*basis[i][2]#/n_cat
+                        cmap_array[:,3]+=pdos_weights[i,nb,:,1]*basis[i][3]#/n_cat
+                        
+                        #cmap_array[:,0:3]=cmap_array[:,0:3]/n_cat
                         cmap_array=np.where(cmap_array>1,1,cmap_array)
                         cmap = ListedColormap(cmap_array)
                     
                     z = np.linspace(0, 1, len(kpoint_array))
-            
+                
                     colorline(kpoint_array[sort_array], energy_array_2[sort_array][:,nb], z, cmap=cmap, linewidth=3)
                     ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,nb],linewidth=linewidth,alpha=0)
     
@@ -853,22 +895,27 @@ def main_dispersion():
         
             
         else:
-            ax.plot(kpoint_array[sort_array],energy_array[sort_array],color=spin_up,label="without SOC",linewidth=linewidth)
-            for i in n_up:
-                ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,i],linewidth=linewidth,color=next(n_colors))
-            c=1
+            if show=='up' or show=='both':
+                ax.plot(kpoint_array[sort_array],energy_array[sort_array],color=spin_up,label=overlay_labels[0],linewidth=linewidth)
+                for i in n_up:
+                    ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,i],linewidth=linewidth,color=next(n_colors))
+                c=1
             if no_spins==2:
-                ax.plot(kpoint_array[sort_array],energy_array_2[sort_array],color=spin_do,label="without SOC",linewidth=linewidth)
-                for i in n_down:
-                    ax.plot(kpoint_array[sort_array],energy_array_2[sort_array][:,i],linewidth=linewidth,color=next(n_colors))
+                if show=='down' or show=='both':
+                    ax.plot(kpoint_array[sort_array],energy_array_2[sort_array],color=spin_do,label=overlay_labels[0],linewidth=linewidth)
+                    for i in n_down:
+                        ax.plot(kpoint_array[sort_array],energy_array_2[sort_array][:,i],linewidth=linewidth,color=next(n_colors))
             
     
             if doSOC:
                 #kpoint_array_soc=1+(kpoint_array[-1]-1)*(kpoint_array_soc-1)/(kpoint_array_soc[-1]-1)
-                ax.plot(kpoint_array_soc,energy_array_soc[sort_array_soc],color=spin_do,label="with SOC",linewidth=linewidth,linestyle="--")
+                ax.plot(kpoint_array_soc,energy_array_soc[sort_array_soc],color=spin_up,label=overlay_labels[1],linewidth=linewidth,linestyle="--")
+                if no_spins_soc==2:
+                    ax.plot(kpoint_array_soc,energy_array_soc2[sort_array_soc],color=spin_do,label=overlay_labels[1],linewidth=linewidth,linestyle="--")
                 handles, labels = plt.gca().get_legend_handles_labels()
                 by_label = dict(zip(labels, handles))
-                if not do_dos:
+
+                if not do_dos and overlay_labels[0]!=None:
                     plt.legend(by_label.values(), by_label.keys(),loc="upper right",fontsize=text)
     
     
