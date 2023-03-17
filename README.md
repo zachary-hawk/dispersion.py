@@ -1,6 +1,13 @@
 # dispersion.py
 CASTEP post processing for plotting bandstructures and phonon dispersions
 
+# Installation
+
+This package is installable through pip via GitHub:
+```
+pip install git+https://github.com/zachary-hawk/dispersion.py.git
+```
+
 # General Usage
 
 
