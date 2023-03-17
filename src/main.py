@@ -22,7 +22,7 @@ import argparse
 import ase.io as io
 import ase.dft.bz as bz
 import warnings
-
+import pickle
 def blockPrint():
     sys.stdout = open(os.devnull, 'w')
   
@@ -36,7 +36,7 @@ fracs=np.array([0.5,0.0,0.25,0.75,0.33333333,0.66666667])
 
 
 # pdos reader
-def pdos_read(seed,species):
+def pdos_read(seed,species,popn_select):
     from scipy.io import FortranFile as FF
 
     f=FF(seed+'.pdos_bin', 'r','>u4')
@@ -49,12 +49,22 @@ def pdos_read(seed,species):
     max_eigenvalues=f.read_ints('>u4')[0]
     
     orbital_species=f.read_ints('>u4')
+    num_species=len(np.unique(orbital_species))
     orbital_ion=f.read_ints('>u4')
     orbital_l=f.read_ints('>u4')
-    print(orbital_species,orbital_ion,orbital_l)   
+    cr=np.where(orbital_species==2)[0]
+    cr1=np.where(orbital_ion[cr]==1)[0]
+    print(orbital_species[cr][cr1])
+    print(orbital_ion[cr][cr1])
+    print(orbital_l[cr][cr1])
+
+    #print(orbital_species,orbital_ion,orbital_l)   
 
     kpoints=np.zeros((num_kpoints,3))
     pdos_weights=np.zeros((num_popn_orb,max_eigenvalues,num_kpoints,num_spins))
+
+    pdos_orb_spec=np.zeros((num_species,4,max_eigenvalues,num_kpoints,num_spins))
+    
     for nk in range(0,num_kpoints):
         record=f.read_record('>i4','>3f8')
         kpt_index,kpoints[nk,:]=record
@@ -64,11 +74,56 @@ def pdos_read(seed,species):
 
             for nb in range(0,num_eigenvalues):
                 pdos_weights[0:num_popn_orb,nb,nk,ns]=f.read_reals('>f8')
-                
+                #print(nb,nk,ns,pdos_weights[0:num_popn_orb,nb,nk,ns])
                 #norm=np.sqrt(np.sum((pdos_weights[0:num_popn_orb,nb,nk,ns])**2))
                 norm=np.sum((pdos_weights[0:num_popn_orb,nb,nk,ns]))
                 pdos_weights[0:num_popn_orb,nb,nk,ns]=pdos_weights[0:num_popn_orb,nb,nk,ns]/norm
 
+    # reshape so we can work out which bands are which
+    for i in range(len(orbital_species)):
+        l_ind=orbital_l[i]
+        spec_ind=orbital_species[i]-1
+
+        pdos_orb_spec[spec_ind,l_ind,:,:,:]=pdos_orb_spec[spec_ind,l_ind,:,:,:] + pdos_weights[i,:,:,:]
+
+    # Go through each kpoint, band and spin to find the species and orbital with highest occupancy. Then we can set it to 1 to find the mode.
+    for nk in range(num_kpoints):
+        for nb in range(max_eigenvalues):
+            for ns in range(num_spins):
+                max_spec,max_l=np.where(pdos_orb_spec[:,:,nb,nk,ns]==np.max(pdos_orb_spec[:,:,nb,nk,ns]))
+
+                pdos_orb_spec[:,:,nb,nk,ns]=0
+                pdos_orb_spec[max_spec[0],max_l[0],nb,nk,ns]=1
+
+    pdos_bands=np.sum(pdos_orb_spec,axis=3)
+
+    #print(pdos_bands[:,:,89,0])
+    
+    band_char=np.zeros((2,max_eigenvalues,num_spins))
+    for nb in range(0,max_eigenvalues):
+        for ns in range(0,num_spins):
+            max_spec,max_l=np.where(pdos_bands[:,:,nb,ns]==np.max(pdos_bands[:,:,nb,ns]))
+
+            band_char[0,nb,ns]=max_spec[0]+1
+            band_char[1,nb,ns]=max_l[0]
+
+
+    # Now filter based on user input
+    popn_bands=np.zeros((max_eigenvalues,num_spins),dtype=bool)
+    if popn_select[0] is not None:
+        for nb in range(max_eigenvalues):
+            for ns in range(num_spins):
+                #print(band_char[:,nb,ns],popn_select)
+                if band_char[0,nb,ns]==popn_select[0] and band_char[1,nb,ns]==popn_select[1]:
+                    popn_bands[nb,ns]=1
+                    
+
+        
+        
+
+        return popn_bands
+
+    
     if species:
         num_species=len(np.unique(orbital_species))
         pdos_weights_sum=np.zeros((num_species,max_eigenvalues,num_kpoints,num_spins))
@@ -82,7 +137,7 @@ def pdos_read(seed,species):
         num_orbitals=4
         pdos_weights_sum=np.zeros((num_orbitals,max_eigenvalues,num_kpoints,num_spins))
         pdos_colours=np.zeros((3,max_eigenvalues,num_kpoints,num_spins))
-
+        
         r=np.array([1,0,0])
         g=np.array([0,1,0])
         b=np.array([0,0,1])
@@ -349,11 +404,16 @@ def main_dispersion():
     parser.add_argument("-as",'--aspect_ratio',help="Specify the aspect ratio of the dispersion plot.",choices=['letter','square'],default='square')
     parser.add_argument('-z','--zero',help='Do not shift the Fermi level to 0 eV.',action='store_true')
     parser.add_argument('--show',help='Supress plotting of spin bands',choices=['up','down','both'],default='both')
+    parser.add_argument('--show_axes',help='Select which axis labels to show',choices=['x','y','both','none'],default='both')
+    parser.add_argument('--stretch',default=1,type=float,help='Stretch factor for the figure')
+    parser.add_argument('--pickle',help='Save the final figure as a python pickle file.',action='store_true')
+    parser.add_argument('--popn_select',help='Highlight bands corresponding to particlar orbitals. Usage --popn_select 3 2, where 3 is the 3rd heaviest element in the system and l=2 is the d orbitals.',nargs=2,type=float,default=[None,None])
+    
     args = parser.parse_args()
     seed = args.seed
     save = args.save
     multi= args.multi
-    linewidth=np.float(args.line)
+    linewidth=float(args.line)
     lim= args.lim
     debug=args.debug
     spin_split=args.spin
@@ -379,17 +439,23 @@ def main_dispersion():
     aspect=args.aspect_ratio
     zero=args.zero
     show=args.show
+    show_axes=args.show_axes
+    stretch=args.stretch
+    pkl=args.pickle
+    popn_select=args.popn_select
+    
     blockPrint()
 
     def path_finder():
     
         # Open the cell
         path_str=bv_latt.special_path
-        
+
         path_points=[]
         path_labels=[]
         for L in path_str:
-            if L==",":
+
+            if L=="," or L=='1':
                 break
             path_labels.append(L)
             path_points.append(special_points[L])
@@ -476,18 +542,47 @@ def main_dispersion():
     if spin_split:
         spin_up="r"
         spin_do="b"
+        spin_do_light='#D4D4FF'#'teal'
+        spin_up_light='#FFD4D4'#'#860079'
     elif flip:
         spin_up="b"
         spin_do="r"
+        spin_up_light='teal'
+        spin_down_light='#860079'
     
     else :
         spin_up="black"
         spin_do="black"
+        spin_up_light='grey'
+        spin_down_light='grey'
 
+        '''
+    # TEMP FOR PAPER
+
+    if spin_split:
+        spin_up="r"
+        spin_do="b"
+        spin_do_light='cyan'
+        spin_up_light='violet'
+    elif flip:
+        spin_up="y"
+        spin_do="r"
+        spin_up_light='orange'
+        spin_do_light='purple'
+    
+    else :
+        spin_up="black"
+        spin_do="black"
+        spin_up_light='grey'
+        spin_down_light='grey'
+        '''
+        
 
     #calculate the pdos if needed
+    if popn_select[0] is not None:
+        popn_bands=pdos_read(seed,species,popn_select)
     if pdos:
-        pdos_weights=pdos_read(seed,species)
+        pdos_weights=pdos_read(seed,species,popn_select)
         
     if doSOC:
         energy_array_soc,energy_array_soc2,sort_array_soc,kpoint_list_soc,kpoint_array_soc,no_spins_soc,no_kpoints,fermi_energy,no_electrons,no_electrons_2,no_eigen,no_eigen_2,lattice2=calc_bands(SOC,zero,show)
@@ -643,9 +738,9 @@ def main_dispersion():
     
     if not do_dos:
         if aspect=='square':
-            aspect_r=(7,7)
+            aspect_r=(7*stretch,7)
         else:
-            aspect_r=(9,7)
+            aspect_r=(9*stretch,7)
         fig, ax = plt.subplots(figsize=aspect_r)
     else:
         from matplotlib.ticker import MaxNLocator
@@ -741,9 +836,7 @@ def main_dispersion():
                 #    ticks.append("")
     
     ax.set_xticklabels(ticks)
-    
-    
-        
+
     #plt.gcf().subplots_adjust(bottom=0.2)
     
     n_colors=cycle(['blue','red','green','black','purple','orange','yellow','cyan'])
@@ -850,9 +943,10 @@ def main_dispersion():
                     cmap = ListedColormap(cmap_array)
                 
                 z = np.linspace(0, 1, len(kpoint_array))
-            
-                colorline(kpoint_array[sort_array], energy_array[sort_array][:,nb], z, cmap=cmap, linewidth=3)
-                ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,nb],linewidth=linewidth,alpha=0)
+                if show=='up' or show=='both':
+                    
+                    colorline(kpoint_array[sort_array], energy_array[sort_array][:,nb], z, cmap=cmap, linewidth=3)
+                    ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,nb],linewidth=linewidth,alpha=0)
             
             if no_spins==2:
 
@@ -871,9 +965,9 @@ def main_dispersion():
                         cmap = ListedColormap(cmap_array)
                     
                     z = np.linspace(0, 1, len(kpoint_array))
-                
-                    colorline(kpoint_array[sort_array], energy_array_2[sort_array][:,nb], z, cmap=cmap, linewidth=3)
-                    ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,nb],linewidth=linewidth,alpha=0)
+                    if show=='down' or show=='both':
+                        colorline(kpoint_array[sort_array], energy_array_2[sort_array][:,nb], z, cmap=cmap, linewidth=3)
+                        ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,nb],linewidth=linewidth,alpha=0)
     
         
             custom_lines = []
@@ -897,21 +991,37 @@ def main_dispersion():
         else:
             if show=='up' or show=='both':
                 ax.plot(kpoint_array[sort_array],energy_array[sort_array],color=spin_up,label=overlay_labels[0],linewidth=linewidth)
+                if popn_select[0] is not None:
+                    for i in range(len(popn_bands)):
+                        if popn_bands[i,0]:
+                            ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,i],color=spin_up_light,label=overlay_labels[0],linewidth=linewidth)
+
                 for i in n_up:
                     ax.plot(kpoint_array[sort_array],energy_array[sort_array][:,i],linewidth=linewidth,color=next(n_colors))
                 c=1
             if no_spins==2:
                 if show=='down' or show=='both':
                     ax.plot(kpoint_array[sort_array],energy_array_2[sort_array],color=spin_do,label=overlay_labels[0],linewidth=linewidth)
+                    if popn_select[0] is not None:
+                        for i in range(len(popn_bands)):
+                            if popn_bands[i,1]:
+                                ax.plot(kpoint_array[sort_array],energy_array_2[sort_array][:,i],color=spin_do_light,label=overlay_labels[0],linewidth=linewidth)
+
+
                     for i in n_down:
                         ax.plot(kpoint_array[sort_array],energy_array_2[sort_array][:,i],linewidth=linewidth,color=next(n_colors))
             
     
             if doSOC:
                 #kpoint_array_soc=1+(kpoint_array[-1]-1)*(kpoint_array_soc-1)/(kpoint_array_soc[-1]-1)
-                ax.plot(kpoint_array_soc,energy_array_soc[sort_array_soc],color=spin_up,label=overlay_labels[1],linewidth=linewidth,linestyle="--")
+                if show=='up' or show=='both':
+                    ax.plot(kpoint_array_soc,energy_array_soc[sort_array_soc],color=spin_up,label=overlay_labels[1],linewidth=linewidth,linestyle="--")
+
+
                 if no_spins_soc==2:
-                    ax.plot(kpoint_array_soc,energy_array_soc2[sort_array_soc],color=spin_do,label=overlay_labels[1],linewidth=linewidth,linestyle="--")
+                    if show=='down' or show=='both':
+                        ax.plot(kpoint_array_soc,energy_array_soc2[sort_array_soc],color=spin_do,label=overlay_labels[1],linewidth=linewidth,linestyle="--")
+                    
                 handles, labels = plt.gca().get_legend_handles_labels()
                 by_label = dict(zip(labels, handles))
 
@@ -938,6 +1048,16 @@ def main_dispersion():
         y=ax2.get_ylim()[1]*0.85
         ax2.text(x,y,fig_cap,wrap=True, horizontalalignment='center', fontsize=text)
     title_seed=seed#.replace("_","\_")
+    if show_axes=='y':
+        ax.set_xticklabels([])
+    if show_axes=='x':
+        ax.set_yticklabels([])
+        ax.set_ylabel('')
+    if show_axes=='none':
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_ylabel('')
+
     if save:
         if title!=None:
             plt.suptitle(title,fontsize=text)
@@ -954,6 +1074,23 @@ def main_dispersion():
         else:
             plt.tight_layout()
             fig.savefig(seed+"-bs."+exe)
+    elif pkl:
+        if title!=None:
+            plt.suptitle(title,fontsize=text)
+    
+        if do_phonons:
+            plt.tight_layout()
+            pickle.dump(fig,open(seed+"-phonon.pkl",'wb'))
+        elif doSOC:
+            plt.tight_layout()
+            pickle.dump(fig,open(seed+"-SOC-bs.pkl",'wb'))
+        elif do_dos:
+            plt.tight_layout()
+            pickle.dump(fig,open(seed+"-SOC-bs-dos.pkl",'wb'))
+        else:
+            plt.tight_layout()
+            pickle.dump(fig,open(seed+"-bs.pkl",'wb'))
+
     else:
         plt.title(title_seed,fontsize=20)
         plt.tight_layout()
